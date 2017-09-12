@@ -1,0 +1,53 @@
+﻿
+#pragma kernel CalculateAmbient
+
+struct CoordDir
+{
+	int x;
+	int y;
+	int z;
+	int dir;
+};
+
+RWStructuredBuffer<float> src;   
+RWStructuredBuffer<float> dst;
+StructuredBuffer<CoordDir> rect;
+
+inline float Get(RWStructuredBuffer<float> a, int x, int y, int z)
+{
+	//return a[(z-rect[1].z)*rect[0].x*rect[0].y + (y-rect[1].y)*rect[0].x + x - rect[1].x];
+	return a[z*rect[0].x*rect[0].y + y*rect[0].x + x];
+}
+
+inline float SafeGet(RWStructuredBuffer<float> a, int x, int y, int z)
+{
+	//return a[(z-rect[1].z)*rect[0].x*rect[0].y + (y-rect[1].y)*rect[0].x + x - rect[1].x];
+	
+	if (x<0 || x>=rect[0].x || y<0 || y>=rect[0].y || z<0 || z>=rect[0].z) return 1;
+	else return a[z*rect[0].x*rect[0].y + y*rect[0].x + x];
+}
+
+inline void Set(RWStructuredBuffer<float> a, int x, int y, int z, float val)
+{
+	//a[(z-rect[1].z)*rect[0].x*rect[0].y + (y-rect[1].y)*rect[0].x + x - rect[1].x] = val; 
+	a[z*rect[0].x*rect[0].y + y*rect[0].x + x] = val; 
+}
+
+inline CoordDir GetCoord(int num)
+{
+	CoordDir c;
+	c.z = num/(rect[0].x*rect[0].y);
+	c.y = (num - c.z*rect[0].x*rect[0].y) / rect[0].x;
+	c.x = num - c.z*rect[0].x*rect[0].y - c.y*rect[0].x;
+
+	return c;
+}
+
+[numthreads(16,1,1)]
+void CalculateAmbient (uint3 id : SV_DispatchThreadID)
+{
+	CoordDir c = GetCoord(id.x);
+
+	float upVal = SafeGet(src, c.x, c.y+1, c.z);
+	Set(dst, c.x, c.y, c.z, c.y/10.0); 
+}

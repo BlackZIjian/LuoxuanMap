@@ -1,0 +1,559 @@
+﻿using UnityEngine;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Threading;
+
+
+namespace Plugins
+{
+	[System.Serializable] //Calculate and Apply could not be serialized
+	public class ThreadWorker 
+	{
+		public static Thread mainThread = null;
+		public static bool isPlaymode = false;
+
+		public static List<ThreadWorker> queue = new List<ThreadWorker>(); //have to remove from queue on restart, so it's actually List
+
+		public static bool on = true;
+		public static bool multithreading = true;
+		public static int maxThreads = 3; 
+		//public static int threadsRunning = 0;
+		//public static int maxApply = 1;
+		public static int maxApplyTime = 15;
+		public static int sleep = 0;
+
+		#region Log
+			public static bool logging = true;
+			public struct LogEntity
+			{
+				public ThreadWorker worker;
+				public string message;
+				public Stage stage;
+				public bool stop;
+				public int threadId;
+
+				public enum ConditionMet { Null, True, False }
+				public ConditionMet threadCondition;
+				public ConditionMet applyCondition;
+
+				public string Print () { return worker.name + " " + message + "  (stage:" + stage + " threadId:" + threadId + " stop:" + stop + " thC:" + threadCondition + " apC:" + applyCondition + ")\n"; }
+			}
+			public static List<LogEntity> log = new List<LogEntity>();
+			public static void Log (ThreadWorker worker, string message)
+			{
+				if (log.Count > 50000) log.RemoveRange(0,20000);
+
+				LogEntity logEntity = new LogEntity() { worker=worker, message=message, stage=worker.stage, stop=worker.stop, threadId=Thread.CurrentThread.ManagedThreadId };
+				if (worker.threadCondition != null) 
+				{
+					if (worker.threadCondition()) logEntity.threadCondition = LogEntity.ConditionMet.True;
+					else logEntity.threadCondition = LogEntity.ConditionMet.False;
+				}
+				if (worker.applyCondition != null) 
+				{
+					if (worker.applyCondition()) logEntity.applyCondition = LogEntity.ConditionMet.True;
+					else logEntity.applyCondition = LogEntity.ConditionMet.False;
+				}
+				log.Add(logEntity);
+			}
+			public static string PrintLog () { List<ThreadWorker> tmp = null; return PrintLog(tmp); }
+			public static string PrintLog (ThreadWorker worker) { List <ThreadWorker> workers = new List<ThreadWorker>(); workers.Add(worker); return PrintLog(workers); }
+			public static string PrintLog (List<ThreadWorker> workers)
+			{
+				if (log==null) return "No Logging Enabled";
+				string result = "";
+				for (int i=0; i<log.Count; i++)
+				{
+					if (workers!=null && workers.Count!=0 && !workers.Contains(log[i].worker)) continue;
+					result += log[i].Print();
+				}
+				return result;
+			}
+			public static List<ThreadWorker> currentlySelectedWorkers = null;
+		#endregion
+
+
+		public static void Refresh ()
+		{
+			//checking main thread for IsMainThread function
+			if (mainThread==null) mainThread = Thread.CurrentThread;
+
+			//checking playmode
+			#if UNITY_EDITOR
+			isPlaymode = UnityEditor.EditorApplication.isPlaying;
+			#else
+			isPlaymode = true;
+			#endif
+
+			if (!on) return;
+
+			//updating
+			UpdateThreads();
+			UpdateApply();
+
+			//clearing queue if it has all of the workers idle
+			bool allIdle = true;
+			int queueCount = queue.Count;
+			for (int i=0; i<queueCount; i++)
+				if (queue[i].stage != Stage.ready && queue[i].stage != Stage.idle) { allIdle=false; break; }
+			if (allIdle) queue.Clear();
+		}
+
+
+		public static void UpdateThreads () //called each time any thread is complete
+		{try{
+
+			if (!on || queue.Count==0) return;
+			
+			int threadsNow = 0; //used when multithreading is off, same as in Apply
+			int threadsRunning = 0; //current number of threads fhen multithreading is on
+
+			//calculating number of threads running
+			int queueCount = queue.Count;
+			for (int i=0; i<queueCount; i++)
+				if (queue[i].stage == Stage.threadRunning) threadsRunning++;
+
+			//staring new threads
+			while (threadsRunning<maxThreads && threadsNow<maxThreads)
+			{
+				//finding suitable worker with highest priority
+				float maxProirity = -2000000;
+				int maxProirityNum = -1;
+				ThreadWorker maxPriorityWorker = null;
+
+				lock (queue)
+				{
+					queueCount = queue.Count;
+					for (int i=0; i<queueCount; i++)
+					{
+						ThreadWorker worker = queue[i];
+						if (worker==null || worker.stage!=Stage.threadEnqueued) continue; //if object destroyed or other stage
+						//if (worker.Calculate==null) { worker.SwitchStage(Stage.applyEnqueued); continue; }
+						if (worker.priority < maxProirity) continue;
+						if (worker.threadCondition!=null && !worker.threadCondition()) continue;
+
+						maxPriorityWorker = worker; 
+						maxProirity = worker.priority; 
+						maxProirityNum = i;
+					}
+				}
+
+				//no suitable threads
+				if (maxPriorityWorker==null) break; 
+
+				//starting thread
+				lock (maxPriorityWorker.locker)
+				{
+					if (maxPriorityWorker.stage != Stage.threadEnqueued) return; //this could happen if two threads selecting one worker, or worker stopped while being selected 
+					
+					if (maxPriorityWorker.stage == Stage.idle) Debug.Log("Pre-enqueuing idle");
+
+					if (logging) Log(maxPriorityWorker, "Refresh:ThreadSelected (Max Priority:" + maxProirity + ") " + maxPriorityWorker.stage);  
+
+					if (maxPriorityWorker.stage == Stage.idle) Debug.Log("Enqueued idle");
+
+					threadsRunning++;
+					threadsNow++;
+
+					if (multithreading)
+					{
+						maxPriorityWorker.thread = new Thread(maxPriorityWorker.ThreadFn);
+						maxPriorityWorker.thread.IsBackground = true;
+				
+						maxPriorityWorker.SwitchStage(Stage.threadRunning); //before actually starting
+						maxPriorityWorker.stop = false;
+						maxPriorityWorker.restart = false;
+
+						maxPriorityWorker.thread.Start();
+					}
+					else
+					{
+						
+						maxPriorityWorker.ThreadFn();
+					}
+				}
+			}
+		} catch (System.Exception e) {Debug.LogError("Spinner Error: " + e); }
+		}
+
+		public static void UpdateApply ()
+		{
+			if (!on || queue.Count==0) return;
+			
+			//int applyNow = 0;
+
+			System.Diagnostics.Stopwatch timer = new System.Diagnostics.Stopwatch();
+			timer.Start();
+
+			while (timer.ElapsedMilliseconds < maxApplyTime)
+			{
+				//finding suitable worker with highest priority
+				float maxProirity = -2000000;
+				int maxProirityNum = -1;
+				ThreadWorker maxPriorityWorker = null;
+
+				int queueCount = queue.Count;
+				for (int i=0; i<queueCount; i++)
+				{
+					ThreadWorker worker = queue[i];
+					//if (logging) worker.Log("Update Apply");
+					if (worker==null) continue; //if object destroyed
+					if (worker.stage!=Stage.applyEnqueued && worker.stage!=Stage.prepareEnqueued) continue; //other stage
+					//if (worker.stage==Stage.prepareEnqueued && worker.Prepare==null) { worker.SwitchStage(Stage.threadEnqueued); continue; } //theoretically Start should not send workers without Prepare to queue, but just in case
+					//if (worker.stage==Stage.applyEnqueued && worker.Apply==null) { worker.SwitchStage(Stage.idle); continue; } //theoretically threadfn should not send workers without Apply to queue, but just in case
+					if (worker.priority < maxProirity) continue;
+					if (worker.stage==Stage.applyEnqueued && worker.applyCondition!=null && !worker.applyCondition()) continue;
+					
+					maxPriorityWorker = worker;
+					maxProirity = worker.priority; 
+					maxProirityNum = i;
+				}
+
+				//no suitable applies
+				if (maxPriorityWorker==null) 
+				{
+					/*bool isSomeWorkerRunning = false;
+					for (int i=0; i<queueCount; i++)
+						if (queue[i].stage != Stage.applyEnqueued && queue[i].stage != Stage.idle) isSomeWorkerRunning = true;
+					if (!isSomeWorkerRunning) 
+					{
+						Debug.LogError("Could not pick proper Worker to Apply. Clearing queue.");
+//						queue.Clear();
+					}*/
+					break;
+				} 
+
+				//apply
+				if (logging) Log(maxPriorityWorker, "Refresh:ApplyPrepSelected");
+
+				if (maxPriorityWorker.stage == Stage.prepareEnqueued)
+				{
+					//maxPriorityWorker.SwitchStage(Stage.applyRunning);
+					maxPriorityWorker.PrepareFn();
+				}
+				if (maxPriorityWorker.stage == Stage.applyEnqueued) 
+				{
+					maxPriorityWorker.SwitchStage(Stage.applyRunning);
+					maxPriorityWorker.ApplyFn();
+				}
+				//applyNow++;
+			}
+		}
+
+		public string name;
+
+		public delegate void ActionDelegate();
+		public event ActionDelegate Prepare;
+		public event ActionDelegate Calculate;
+		public event ActionDelegate Apply;
+
+		public Thread thread; //public for debug purpose
+		public float priority = 1;
+		private readonly object locker = new object();
+		private readonly object threadLocker = new object(); //used to lock generate function only, not worker (using single locker for this will make thread wait until generate end to perform stop)
+
+		public enum Stage { idle, prepareEnqueued, threadEnqueued, threadRunning, applyEnqueued, applyRunning, ready }; //threadComplete=applyEnqueued, idle==complete, applyRunning if access from other non-main thread. Never changes externally
+		public Stage stage = Stage.idle; //public for test purpose
+		public bool stop = false;
+		public bool restart = false;
+		//public bool required; //TODO: I dont like it here
+		public bool processing {get{ return stage != Stage.idle && stage != Stage.ready; }}
+		public bool calculated {get{ return stage == Stage.applyEnqueued || stage == Stage.applyRunning || stage == Stage.ready; }}
+		public bool ready {get{ return stage == Stage.ready; }} //resets on Stop, Start or any other stage change
+			/*set{ 
+				if (processing) 
+				{
+					if (logging) Log(this, "Stopping via set ready");
+					Stop(); 
+				}
+				else { if (value) stage = Stage.ready; else stage = Stage.idle; }
+			}}*/
+		public bool idle {get { return stage == Stage.ready || stage == Stage.idle; }}
+
+		//helper vars
+		public bool blank = true; //have not ever started
+		public bool enabled = true;
+		
+		public Func<bool> threadCondition; //will not start thread unless condition is met
+		public Func<bool> applyCondition; //will not start apply unless condition is met
+
+		public bool guiShowLog = false;
+
+		public string tag;
+		public float progress;
+		public static Dictionary<string,float> completedTags = new Dictionary<string, float>();
+		public static Dictionary<string,float> totalTags = new Dictionary<string, float>();
+
+		
+
+		public void SwitchStage (Stage newStage, bool markReady=false)
+		{
+			//TODO: think of "ready" stage instead that ugly "markReady"
+			if (newStage == Stage.prepareEnqueued && Prepare == null) newStage = Stage.threadEnqueued;
+			if (newStage == Stage.threadEnqueued && Calculate == null) newStage = Stage.applyEnqueued;
+			if (newStage == Stage.applyEnqueued && Apply == null) newStage = Stage.ready;
+			
+			if (logging) Log(this, "StageSwitch:" + stage + "->" + newStage);
+
+			//if (markReady)
+			//	if (newStage == Stage.idle && stage != Stage.idle) 
+			//	ready = true;
+			stage = newStage;
+		}
+
+		public void Stop ()
+		{
+			lock (locker)
+			{
+				if (logging) Log(this, "StopCommand");
+			
+				if (stage==Stage.idle) { if (logging) Log(this, "Stop: Already stopped"); }
+				else if (stage==Stage.ready) { if (logging) Log(this, "Stop: Resetting ready mark");  SwitchStage(Stage.idle); }
+				else if (stage==Stage.prepareEnqueued || stage==Stage.threadEnqueued || stage==Stage.applyEnqueued) { if (logging) Log(this, "Stop: Cancel enqueue"); SwitchStage(Stage.idle); }
+				else if (stage==Stage.threadRunning) { if (logging) Log(this, "Stop: Enabling stop command"); stop=true; restart=false; }
+			}
+		}
+
+		public void Start (bool forceRestart=true)
+		{
+			//Before debugging why generate does not start at all make sure Threader.Refresh() is called in Update
+			lock (locker)
+			{
+				if (logging) Log(this, "StartCommand");
+
+				if (!enabled) return;
+				blank = false;
+				//ready = false;
+
+				if (!queue.Contains(this))
+				{
+					if (stage!=Stage.idle && stage!=Stage.ready) Debug.LogError("Start: Enqueuing worker with non-idle stage");
+					queue.Add(this);
+					SwitchStage(Stage.prepareEnqueued);
+				}
+
+				else if (stage==Stage.idle || stage==Stage.ready) //simply restarting if already complete
+				{
+					SwitchStage(Stage.prepareEnqueued);
+				}
+
+				else if (forceRestart)
+				{
+					stop = true;
+					restart = true;
+				}
+			}
+		}
+
+		public void StartBlank () { if (stage==Stage.idle) Start(); }
+		public void StopProcessing () { if (stage!=Stage.idle && stage!=Stage.idle) Stop(); }
+
+
+
+		private void PrepareFn ()
+		{
+			if (logging) Log(this, "PrepareCalled");
+
+			try 
+			{ 
+				//preparing
+				if (Prepare != null) Prepare(); 
+
+				//stopping/restarting
+				if (stop)
+				{
+					if (restart) 
+					{
+						if (logging) Log(this, "PrepareReassigningEnqueue");
+						restart=false;
+						SwitchStage(Stage.prepareEnqueued);
+					}
+					else SwitchStage(Stage.idle);
+					stop = false;
+				}
+
+				//if not stopped and successfully complete - enqueuing thread
+				else SwitchStage(Stage.threadEnqueued, markReady:true);
+			}
+			catch (System.Exception e) 
+			{ 
+				Debug.LogError("Prepare Error: " + e); 
+				SwitchStage(Stage.idle); 
+			}
+
+			if (logging) Log(this, "PrepareEnds");
+		}
+
+
+		private void ThreadFn ()
+		{
+			SwitchStage(Stage.threadRunning);
+			if (logging) Log(this, "ThreadCalled");
+
+			try
+			{
+				//generating
+				if (Calculate != null) 
+					lock (threadLocker)
+						Calculate();
+				
+				//debug sleep
+				if (sleep >= 1) Thread.Sleep(sleep);
+
+				//pausing thread if workers turned off
+				//while (!ThreadWorker.on) Thread.Sleep(500);
+
+				if (logging) Log(this, "ThreadFnCalculated");
+
+				//stopping/restarting
+				if (stop)
+				{
+					if (restart) 
+					{
+						if (logging) Log(this, "ThreadReassigningEnqueue");
+						restart=false;
+						SwitchStage(Stage.prepareEnqueued);
+					}
+					else SwitchStage(Stage.idle);
+					//stop = false; //TODO should be enabled
+				}
+
+				//if not stopped and successfully complete - enqueuing apply 
+				else 
+				{
+					if (this==null) Debug.Log("Thread: ADDING NULL TO APPLY");
+					SwitchStage(Stage.applyEnqueued, markReady:true);
+				}
+			}
+
+			catch (System.Exception e) 
+			{ 
+				Debug.LogError("Thread Error: " + e); 
+				SwitchStage(Stage.idle); 
+			}
+
+			finally
+			{
+				try  { if (multithreading) UpdateThreads(); } //strating new thread in queue
+				catch (System.Exception e) { Debug.LogError("Starting new thread error: " + e); }
+			}
+
+			if (logging) Log(this, "ThreadExit");
+		}
+
+
+		private void ApplyFn ()
+		{
+			if (logging) Log(this, "ApplyCalled");
+
+			try 
+			{ 
+				//preparing
+				if (Apply != null) Apply(); 
+
+				//stopping/restarting
+				if (stop && restart)
+				{
+					if (logging) Log(this, "ApplyReassigningEnqueue");
+					restart=false;
+					SwitchStage(Stage.prepareEnqueued);
+				}
+				else SwitchStage(Stage.ready, markReady:true);
+			}
+			catch (System.Exception e) 
+			{ 
+				Debug.LogError("Apply Error: " + e); 
+				SwitchStage(Stage.idle);
+			}
+
+			if (logging) Log(this, "ApplyEnds");
+		}
+
+
+		public void FinalizeNow ()
+		{
+			if (stage == Stage.prepareEnqueued) PrepareFn();
+			if (stage == Stage.threadEnqueued) ThreadFn();
+			if (stage == Stage.applyEnqueued) ApplyFn();
+		}
+
+		public void ForceAll () { Start(); FinalizeNow(); }
+
+
+		public static bool IsMainThread
+		{get{
+			return mainThread==null || mainThread.Equals(Thread.CurrentThread);
+		}}
+
+
+
+		public static float GetProgress (string tag) {float tmp1=0; float tmp2=0; float tmp3=0; return GetProgress(tag, out tmp3, out tmp1, out tmp2); }
+
+		public static float GetProgress (string tag, out float calculatedSum, out float completeSum, out float totalSum)
+		{
+			calculatedSum = 0;
+			completeSum = 0;
+			totalSum = 0;
+
+			int queueCount = queue.Count;
+			for (int i=0; i<queueCount; i++)
+			{
+				ThreadWorker worker = queue[i];
+				if (worker.tag != tag) continue;
+
+				totalSum += 1;
+				switch (worker.stage)
+				{
+					case Stage.applyEnqueued: case Stage.applyRunning: calculatedSum += 1; break;
+					case Stage.threadRunning: calculatedSum += worker.progress; break;
+					case Stage.idle:  calculatedSum += 1; completeSum += 1; break;
+					case Stage.ready: calculatedSum += 1; completeSum += 1; break;
+				}
+			}
+
+			return completeSum / totalSum;
+		}
+
+		public static bool IsWorking (string tag)
+		{
+			//if (queue.Count == 0) return false;	//will return false in the end anyways
+
+			int queueCount = queue.Count;
+			for (int i=0; i<queueCount; i++)
+			{
+				ThreadWorker worker = queue[i];
+				if (worker.tag != tag) continue;
+				if (worker.stage!=Stage.idle && worker.stage!=Stage.ready) return true;
+			}
+			return false;
+		}
+
+		public void OnGUI (Layout layout)
+		{
+			layout.Par();
+			layout.Label(name, layout.Inset(0.2f), fontStyle:FontStyle.Bold); layout.Inset(0.01f);
+			layout.Field(stage, "Stg:", layout.Inset(0.2f), fieldSize:0.73f); layout.Inset(0.01f);
+			layout.Field(stop, "Stp:", layout.Inset(0.1f)); layout.Inset(0.01f);
+			layout.Label("Prt:"+priority, layout.Inset(0.15f)); layout.Inset(0.01f);
+
+			layout.Label("tc:" + (threadCondition==null? "-" : (threadCondition()? "V" : "X")), layout.Inset(0.06f));
+			layout.Label("ac:" + (applyCondition==null? "-" : (applyCondition()? "V" : "X")), layout.Inset(0.06f));
+			layout.Label("rd:" + (ready? "V" : "X"), layout.Inset(0.06f));
+			layout.Inset(0.01f);
+
+			if (layout.Button("Log", layout.Inset(0.05f))) 
+			{
+				currentlySelectedWorkers = new List<ThreadWorker>();
+				currentlySelectedWorkers.Add(this);
+				Debug.Log(name + " Log:\n\n" + PrintLog(currentlySelectedWorkers));
+			}
+			if (layout.Button("Add", layout.Inset(0.05f))) 
+			{
+				if (currentlySelectedWorkers == null) currentlySelectedWorkers = new List<ThreadWorker>();
+				currentlySelectedWorkers.Add(this);
+				Debug.Log(name + " Log:\n\n" + PrintLog(currentlySelectedWorkers));
+			}
+		}
+	}
+}
