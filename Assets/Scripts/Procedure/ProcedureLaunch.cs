@@ -3,12 +3,13 @@ using GameFramework.Procedure;
 using ProcedureOwner = GameFramework.Fsm.IFsm<GameFramework.Procedure.IProcedureManager>;
 using GameFramework.Fsm;
 
-namespace LARP
+namespace Luoxuan
 {
     public class ProcedureLaunch : ProcedureBase
     {
         private UIComponent UI;
-
+        private int mLoginUIId;
+    
         public void Login()
         {
         }
@@ -21,7 +22,12 @@ namespace LARP
         protected override void OnEnter(ProcedureOwner procedureOwner)
         {
             base.OnEnter(procedureOwner);
-            UI.OpenUIForm(UIFormId.LoginForm, UIGroupId.LoginGroup,this);
+            mLoginUIId = UI.OpenUIForm(UIFormId.LoginForm, UIGroupId.LoginGroup,this);
+        }
+        protected override void OnLeave(ProcedureOwner procedureOwner, bool isShutdown)
+        {
+            base.OnLeave(procedureOwner, isShutdown);
+            UI.CloseUIForm(mLoginUIId);
         }
     }
 }

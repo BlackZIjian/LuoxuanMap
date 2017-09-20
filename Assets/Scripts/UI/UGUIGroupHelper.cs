@@ -1,7 +1,7 @@
 ﻿using UnityEngine;
 using UnityEngine.UI;
 using UnityGameFramework.Runtime;
-namespace LARP
+namespace Luoxuan
 {
     public class UGUIGroupHelper : UIGroupHelperBase
     {

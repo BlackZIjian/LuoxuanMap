@@ -827,7 +827,7 @@ namespace Plugins
 				if (genAroundMainCam) camPosesLength++;
 				if (taggedObjects !=null) camPosesLength += taggedObjects.Length;
 				
-				if (camPosesLength == 0) { Debug.LogError("No Main Camera to deploy"); return new Vector3[0]; }
+				if (camPosesLength == 0) { return new Vector3[0]; }
 				if (camPoses == null || camPosesLength != camPoses.Length) camPoses = new Vector3[camPosesLength];
 				
 				//filling cams array

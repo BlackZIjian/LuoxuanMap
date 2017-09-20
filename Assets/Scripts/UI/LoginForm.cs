@@ -4,7 +4,7 @@ using System.Collections;
 using UnityGameFramework.Runtime;
 using UnityEngine.UI;
 
-namespace LARP
+namespace Luoxuan
 {
     public class LoginForm : UIFormLogic
     {

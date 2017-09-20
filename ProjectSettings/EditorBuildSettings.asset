@@ -8,3 +8,12 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/Scenes/GameCoreScene.unity
     guid: 9ed53268480d8644191506c23b4c4c89
+  - enabled: 1
+    path: Assets/Scenes/Scene00.unity
+    guid: e928c732e57c0c944abb96344dc9081f
+  - enabled: 1
+    path: Assets/Scenes/Scene01.unity
+    guid: a3382fa4b04867344b791ad46124115e
+  - enabled: 1
+    path: Assets/Scenes/VoxelandScene.unity
+    guid: 8e2746e302a62394181c00364ba85409
