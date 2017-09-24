@@ -1,5 +1,6 @@
 ﻿using GameFramework;
 using UnityEngine;
+using System.Collections.Generic;
 using UnityGameFramework.Runtime;
 using GameFramework.Fsm;
 
@@ -51,6 +52,15 @@ namespace Luoxuan
         private CharacterControllerInfo mCharacterControllerInfo;
         private bool isGravity;
         private float mGravityValue;
+        private Vector3 mMoveVelocity;
+
+        private class YieldCutOffVelocityStruct
+        {
+            public Vector3 lastFramePos;
+            public ControllerColliderHit hit;
+        }
+
+        private List<YieldCutOffVelocityStruct> mYieldCutOffList;
         protected internal override void OnInit(object userData)
         {
             base.OnInit(userData);
@@ -76,14 +86,26 @@ namespace Luoxuan
 
             //创建状态机
             GameEntry.GetComponent<FsmComponent>().CreateFsm(this, new CharacterGroundMoveState());
+
+            mMoveVelocity = Vector3.zero;
+            mYieldCutOffList = new List<YieldCutOffVelocityStruct>();
         }
         private void OnControllerColliderHit(ControllerColliderHit hit)
         {
-            
+            if(mMoveVelocity != Vector3.zero)
+            {
+                YieldCutOffVelocityStruct yieldCutOff = new YieldCutOffVelocityStruct();
+                yieldCutOff.hit = hit;
+                yieldCutOff.lastFramePos = hit.transform.position;
+                mYieldCutOffList.Add(yieldCutOff);
+            }
         }
+        
         protected internal override void OnUpdate(float elapseSeconds, float realElapseSeconds)
         {
             base.OnUpdate(elapseSeconds, realElapseSeconds);
+
+            //强行改变transform值时调用Move函数重新计算一次更新ChracterController
             if (mPosition != transform.position)
             {
                 mPosition = transform.position;
@@ -94,17 +116,33 @@ namespace Luoxuan
             {
                 mRotation = transform.rotation;
             }
+
             if(isGravity)
             {
-                if(!mIsGrounded)
-                {
                     if(mUnityCharacterController != null)
                     {
-                        float velocityY = mUnityCharacterController.velocity.y - mGravityValue * elapseSeconds;
-                        Vector3 gravityMotion = new Vector3(0, velocityY * elapseSeconds, 0);
-                        mUnityCharacterController.Move(gravityMotion);
+                        mMoveVelocity.y -= mGravityValue * elapseSeconds;
                     }
+            }
+
+            if(mYieldCutOffList.Count > 0)
+            {
+                for(int i=0;i<mYieldCutOffList.Count;i++)
+                {
+                    Vector3 delta = mYieldCutOffList[i].hit.transform.position - mYieldCutOffList[i].lastFramePos;
+                    Vector3 normal = mYieldCutOffList[i].hit.normal.normalized;
+                    Vector3 normalSubVelocity = Vector3.Dot(mMoveVelocity, normal) * normal;
+                    Vector3 planeSubVelocity = mMoveVelocity - normalSubVelocity;
+                    planeSubVelocity *= 0.8f;//模拟摩擦阻力
+                    mMoveVelocity = planeSubVelocity + Vector3.Dot(delta / elapseSeconds, normal) * normal;
                 }
+                mYieldCutOffList.Clear();
+            }
+            if (mMoveVelocity.magnitude <= 0.05f)
+                mMoveVelocity = Vector3.zero;
+            if(mMoveVelocity != Vector3.zero)
+            {
+                mUnityCharacterController.Move(mMoveVelocity * elapseSeconds);
             }
         }
     }

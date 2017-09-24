@@ -836,8 +836,11 @@ namespace Plugins
 				{
 					Camera mainCam = Camera.main;
 					if (mainCam==null) mainCam = GameObject.FindObjectOfType<Camera>(); //in case it was destroyed or something
-					camPoses[0] = mainCam.transform.position;
-					counter++;
+                    if (mainCam != null)
+                    {
+                        camPoses[0] = mainCam.transform.position;
+                        counter++;
+                    }
 				}
 				if (taggedObjects != null)
 					for (int i=0; i<taggedObjects.Length; i++) camPoses[i+counter] = taggedObjects[i].transform.position;
