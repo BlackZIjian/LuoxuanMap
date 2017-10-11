@@ -11,9 +11,26 @@ namespace Luoxuan
         protected override void OnUpdate(IFsm<BaseCharacter> fsm, float elapseSeconds, float realElapseSeconds)
         {
             base.OnUpdate(fsm, elapseSeconds, realElapseSeconds);
-            Debug.Log("Move Useful");
+            fsm.Owner.SetForwardSpeed(Input.GetAxis("Vertical"));
+            fsm.Owner.SetRightSpeed(Input.GetAxis("Horizontal"));
+            if (!fsm.Owner.mIsGrounded)
+            {
+                ChangeState<CharacterInAirState>(fsm);
+            }
         }
     }
+    public class CharacterInAirState : FsmState<BaseCharacter>
+    {
+        protected override void OnUpdate(IFsm<BaseCharacter> fsm, float elapseSeconds, float realElapseSeconds)
+        {
+            base.OnUpdate(fsm, elapseSeconds, realElapseSeconds);
+            if (fsm.Owner.mIsGrounded)
+            {
+                ChangeState<CharacterGroundMoveState>(fsm);
+            }
+        }
+    }
+
     class CharacterControllerInfo
     {
         public float SlopeLimit;
@@ -23,17 +40,19 @@ namespace Luoxuan
         public Vector3 CenterPos;
         public float Radius;
         public float Height;
+
         public CharacterControllerInfo()
         {
-            SlopeLimit = 45;
+            SlopeLimit = 75;
             StepOffset = 0.3f;
             SkinWidth = 0.08f;
             MinMoveDistance = 0.001f;
-            CenterPos = new Vector3(0,1.005f,0);
+            CenterPos = new Vector3(0, 1.005f, 0);
             Radius = 0.5f;
             Height = 2;
         }
     }
+
     public class BaseCharacter : EntityLogic
     {
         public bool mIsGrounded
@@ -53,14 +72,12 @@ namespace Luoxuan
         private bool isGravity;
         private float mGravityValue;
         private Vector3 mMoveVelocity;
+        private IFsm<BaseCharacter> mFsm;
 
-        private class YieldCutOffVelocityStruct
-        {
-            public Vector3 lastFramePos;
-            public ControllerColliderHit hit;
-        }
+        public float mForwardSpeed;
 
-        private List<YieldCutOffVelocityStruct> mYieldCutOffList;
+        public float mRightSpeed;
+
         protected internal override void OnInit(object userData)
         {
             base.OnInit(userData);
@@ -70,6 +87,11 @@ namespace Luoxuan
             mRotation = Quaternion.Euler(0, 0, 0);
             isGravity = true;
             mGravityValue = 9.8f;
+
+            mForwardSpeed = 5;
+
+            mRightSpeed = 5;
+            
             transform.position = mPosition;
             transform.rotation = mRotation;
             ///
@@ -85,22 +107,37 @@ namespace Luoxuan
             mUnityCharacterController.height = mCharacterControllerInfo.Height;
 
             //创建状态机
-            GameEntry.GetComponent<FsmComponent>().CreateFsm(this, new CharacterGroundMoveState());
+            CharacterGroundMoveState moveState = new CharacterGroundMoveState();
+            
+            CharacterInAirState airState = new CharacterInAirState();
+
+            FsmState<BaseCharacter>[] states = new FsmState<BaseCharacter>[2]
+            {
+                moveState, airState
+            };
+            
+            mFsm = GameEntry.GetComponent<FsmComponent>().CreateFsm(this, states);
+            
+            mFsm.Start<CharacterInAirState>();
 
             mMoveVelocity = Vector3.zero;
-            mYieldCutOffList = new List<YieldCutOffVelocityStruct>();
         }
+
         private void OnControllerColliderHit(ControllerColliderHit hit)
         {
-            if(mMoveVelocity != Vector3.zero)
-            {
-                YieldCutOffVelocityStruct yieldCutOff = new YieldCutOffVelocityStruct();
-                yieldCutOff.hit = hit;
-                yieldCutOff.lastFramePos = hit.transform.position;
-                mYieldCutOffList.Add(yieldCutOff);
-            }
+            //这里处理和别的物体碰撞的逻辑
         }
-        
+
+        public void SetForwardSpeed(float speed)
+        {
+            mMoveVelocity.z = speed * mForwardSpeed;
+        }
+
+        public void SetRightSpeed(float speed)
+        {
+            mMoveVelocity.x = speed * mRightSpeed;
+        }
+
         protected internal override void OnUpdate(float elapseSeconds, float realElapseSeconds)
         {
             base.OnUpdate(elapseSeconds, realElapseSeconds);
@@ -109,40 +146,30 @@ namespace Luoxuan
             if (mPosition != transform.position)
             {
                 mPosition = transform.position;
-                if (isGravity && mIsGrounded)
-                    mUnityCharacterController.Move(Vector3.zero);
+                //if (isGravity && mIsGrounded)
+                //mUnityCharacterController.Move(Vector3.zero);
             }
-            if(mRotation != transform.rotation)
+            if (mRotation != transform.rotation)
             {
                 mRotation = transform.rotation;
             }
 
-            if(isGravity)
+            if (isGravity)
             {
-                    if(mUnityCharacterController != null)
-                    {
-                        mMoveVelocity.y -= mGravityValue * elapseSeconds;
-                    }
-            }
-
-            if(mYieldCutOffList.Count > 0)
-            {
-                for(int i=0;i<mYieldCutOffList.Count;i++)
+                if (mUnityCharacterController != null)
                 {
-                    Vector3 delta = mYieldCutOffList[i].hit.transform.position - mYieldCutOffList[i].lastFramePos;
-                    Vector3 normal = mYieldCutOffList[i].hit.normal.normalized;
-                    Vector3 normalSubVelocity = Vector3.Dot(mMoveVelocity, normal) * normal;
-                    Vector3 planeSubVelocity = mMoveVelocity - normalSubVelocity;
-                    planeSubVelocity *= 0.8f;//模拟摩擦阻力
-                    mMoveVelocity = planeSubVelocity + Vector3.Dot(delta / elapseSeconds, normal) * normal;
+                    if (mIsGrounded)
+                    {
+                        mMoveVelocity.y = 0;
+                    }
+                    mMoveVelocity.y -= mGravityValue * elapseSeconds;
                 }
-                mYieldCutOffList.Clear();
             }
             if (mMoveVelocity.magnitude <= 0.05f)
                 mMoveVelocity = Vector3.zero;
-            if(mMoveVelocity != Vector3.zero)
+            if (mMoveVelocity != Vector3.zero)
             {
-                mUnityCharacterController.Move(mMoveVelocity * elapseSeconds);
+                mUnityCharacterController.Move(transform.TransformDirection(mMoveVelocity) * elapseSeconds);
             }
         }
     }
